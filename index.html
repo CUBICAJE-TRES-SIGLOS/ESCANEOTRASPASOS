@@ -180,7 +180,10 @@
 </head>
 <body>
 <div class="container">
-    <div style="display: flex; justify-content: flex-end; margin-bottom: 8px;">
+    <div style="display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 8px;">
+        <button id="btnLimpiarDatos" style="padding:4px 10px;font-size:12px;background:#17a2b8;color:#fff;border-radius:4px;border:none;cursor:pointer;" title="Limpiar todos los datos de la página" onclick="limpiarDatosPagina()">
+            🧽 Limpiar datos
+        </button>
         <button id="btnLimpiarCache" style="padding:4px 10px;font-size:12px;background:#ffc107;color:#333;border-radius:4px;border:none;cursor:pointer;" title="Limpiar caché local" onclick="limpiarCache()">
             🧹 Limpiar caché
         </button>
@@ -215,6 +218,24 @@
 </div>
 
 <script>
+// Botón limpiar datos de la página
+function limpiarDatosPagina() {
+    if (!confirm('¿Seguro que deseas limpiar todos los datos de la página?')) return;
+    // Limpiar inputs de tipo file y texto
+    document.querySelectorAll('input[type="file"]').forEach(inp => inp.value = '');
+    document.querySelectorAll('input[type="text"], input[type="number"]').forEach(inp => inp.value = '');
+    // Limpiar tablas y resultados
+    const results = document.getElementById('results');
+    if (results) results.innerHTML = '';
+    const status = document.getElementById('status');
+    if (status) status.textContent = '';
+    const sendBtn = document.getElementById('sendBtn');
+    if (sendBtn) sendBtn.disabled = true;
+    // Limpiar selects y checkboxes
+    document.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+    // Si hay otros elementos de datos, agrégalos aquí
+    // ...
+}
 // Botón limpiar caché
 function limpiarCache() {
     if (confirm('¿Seguro que deseas limpiar la caché local de este módulo?')) {
