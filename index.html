@@ -6,8 +6,11 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.15.349/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.0.2/dist/tesseract.min.js"></script>
 <style>
-    /* Estilos para diseño y tabla (puedes ajustar) */
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+    * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+    }
     body {
         font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -18,8 +21,8 @@
         max-width: 1000px;
         margin: 0 auto;
         background: white;
-        border-radius: 12px;           
-        box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        border-radius: 12px;          
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
         padding: 40px;
     }
     h1 {
@@ -45,7 +48,9 @@
         cursor: pointer;
         transition: border-color 0.3s;
     }
-    input[type="file"]:hover { border-color: #667eea; }
+    input[type="file"]:hover {
+        border-color: #667eea;
+    }
     button {
         padding: 12px 24px;
         border: none;
@@ -62,7 +67,7 @@
     }
     #procesBtn:hover {
         transform: translateY(-2px);
-        box-shadow: 0 5px 15px rgba(102,126,234,0.4);
+        box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
     }
     #sendBtn {
         background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
@@ -72,7 +77,7 @@
     }
     #sendBtn:hover:not(:disabled) {
         transform: translateY(-2px);
-        box-shadow: 0 5px 15px rgba(245,87,108,0.4);
+        box-shadow: 0 5px 15px rgba(245, 87, 108, 0.4);
     }
     #sendBtn:disabled {
         opacity: 0.5;
@@ -100,14 +105,16 @@
         background: #f8d7da;
         color: #721c24;
     }
-    #results { margin-top: 30px; }
+    #results {
+        margin-top: 30px;
+    }
     table {
         width: 100%;
         border-collapse: collapse;
         background: white;
         border-radius: 8px;
         overflow: hidden;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
     }
     table thead {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -124,8 +131,12 @@
         border-bottom: 1px solid #eee;
         font-size: 14px;
     }
-    table tbody tr:hover { background: #f8f9fa; }
-    table tbody tr:last-child td { border-bottom: none; }
+    table tbody tr:hover {
+        background: #f8f9fa;
+    }
+    table tbody tr:last-child td {
+        border-bottom: none;
+    }
     table input[type="checkbox"] {
         width: 18px;
         height: 18px;
@@ -137,6 +148,7 @@
         flex-wrap: wrap;
         margin-top: 20px;
     }
+    /* Modal prompt for invoice name */
     .modal-backdrop {
         position: fixed;
         inset: 0;
@@ -153,10 +165,7 @@
         width: 420px;
         box-shadow: 0 8px 30px rgba(0,0,0,0.3);
     }
-    .modal h3 {
-        margin-bottom: 8px;
-        font-size: 16px;
-    }
+    .modal h3 { margin-bottom: 8px; font-size: 16px; }
     .modal input[type="text"] {
         width: 100%;
         padding: 10px;
@@ -165,31 +174,35 @@
         margin-bottom: 12px;
         font-size: 14px;
     }
-    .modal .row {
-        display: flex;
-        gap: 8px;
-        justify-content: flex-end;
-    }
-    .modal .row button {
-        min-width: 90px;
-    }
+    .modal .row { display:flex; gap:8px; justify-content:flex-end; }
+    .modal .row button { min-width: 90px; }
 </style>
 </head>
 <body>
 <div class="container">
+    <div style="display: flex; justify-content: flex-end; margin-bottom: 8px;">
+        <button id="btnLimpiarCache" style="padding:4px 10px;font-size:12px;background:#ffc107;color:#333;border-radius:4px;border:none;cursor:pointer;" title="Limpiar caché local" onclick="limpiarCache()">
+            🧹 Limpiar caché
+        </button>
+    </div>
     <h1>📄 Extraer datos de PDF con OCR y enviar a hoja</h1>
+    
     <div class="input-section">
         <input type="file" id="pdfFile" accept="application/pdf" placeholder="Selecciona un archivo PDF..." />
         <button id="procesBtn" onclick="processPDF()">Procesar PDF</button>
     </div>
+
     <div id="status"></div>
+
     <div class="controls">
         <button id="sendBtn" onclick="sendToSheetDB()" disabled>📤 Enviar seleccionados a hoja</button>
     </div>
+
     <div id="results"></div>
 
-    <div id="nameModalBackdrop" class="modal-backdrop" role="dialog" aria-modal="true">
-        <div class="modal">
+    <!-- Modal to request Nombre before sending -->
+    <div id="nameModalBackdrop" class="modal-backdrop">
+        <div class="modal" role="dialog" aria-modal="true">
             <h3>Nombre para las filas</h3>
             <div>Ingresa el nombre que se asignará a la columna <strong>Nombre</strong> para todas las filas seleccionadas.</div>
             <input id="invoiceNameInput" type="text" placeholder="Nombre de la factura, cliente o pedido" />
@@ -202,6 +215,18 @@
 </div>
 
 <script>
+// Botón limpiar caché
+function limpiarCache() {
+    if (confirm('¿Seguro que deseas limpiar la caché local de este módulo?')) {
+        try {
+            localStorage.clear();
+            sessionStorage.clear();
+            alert('Caché local limpiada.');
+        } catch (e) {
+            alert('Error al limpiar caché: ' + e.message);
+        }
+    }
+}
 async function processPDF() {
     const fileInput = document.getElementById('pdfFile');
     const status = document.getElementById('status');
@@ -219,39 +244,28 @@ async function processPDF() {
 
     for(let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
         const page = await pdf.getPage(pageNum);
-        const scale = 3;
-        const viewport = page.getViewport({ scale });
+        const viewport = page.getViewport({ scale: 2 });
         const canvas = document.createElement("canvas");
         const context = canvas.getContext("2d");
         canvas.width = viewport.width;
         canvas.height = viewport.height;
-
         await page.render({canvasContext: context, viewport: viewport}).promise;
 
-        const imgData = context.getImageData(0, 0, canvas.width, canvas.height);
-        for(let i = 0; i < imgData.data.length; i += 4) {
-            const avg = (imgData.data[i] + imgData.data[i+1] + imgData.data[i+2]) / 3;
-            imgData.data[i] = avg;
-            imgData.data[i+1] = avg;
-            imgData.data[i+2] = avg;
-        }
-        context.putImageData(imgData, 0, 0);
-
-        const { data: { text } } = await Tesseract.recognize(canvas, 'spa', {
-            logger: m => status.textContent = `Procesando página ${pageNum}/${pdf.numPages} - ${Math.round(m.progress*100)}%`,
-            tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK
-        });
-
+        // OCR con Tesseract.js sobre la imagen canvas
+        const { data: { text }} = await Tesseract.recognize(canvas, 'spa', { logger: m => {
+            status.textContent = `Procesando página ${pageNum}/${pdf.numPages} - ${Math.round(m.progress*100)}%`;
+        }});
         fullText += `\n--- Página ${pageNum} ---\n` + text;
     }
 
+    // Filtrar líneas con cantidad, código y descripción (ajustar regex según formato)
     const lines = fullText.split('\n').map(l => l.trim()).filter(l => l);
     const regex = /^(\d+)\s+(\S+)\s+(.+)$/;
 
     const results = lines.map(line => {
         const match = regex.exec(line);
-        if(match && !isNaN(match[1])) {
-            return { cantidad: match[1], codigo: match[2], descripcion: match[3] };
+        if(match) {
+            return {cantidad: match[1], codigo: match[2], descripcion: match[3]};
         }
         return null;
     }).filter(Boolean);
@@ -265,6 +279,7 @@ async function processPDF() {
     status.textContent = `${results.length} línea(s) extraída(s). Selecciona las que quieras y presiona 'Enviar seleccionados a hoja'.`;
 }
 
+// Renderiza una tabla con checkbox para seleccionar filas a enviar
 function renderResults(results) {
     const container = document.getElementById('results');
     const sendBtn = document.getElementById('sendBtn');
@@ -273,11 +288,15 @@ function renderResults(results) {
         sendBtn.disabled = true;
         return;
     }
+
     let html = '<table border="1" cellpadding="6" style="border-collapse:collapse; width:100%;">';
     html += '<thead><tr>' +
         '<th><input id="selectAll" type="checkbox" /></th>' +
-        '<th>Cantidad</th><th>Código</th><th>Descripción</th>' +
+        '<th>Cantidad</th>' +
+        '<th>Código</th>' +
+        '<th>Descripción</th>' +
         '</tr></thead><tbody>';
+
     results.forEach((r, i) => {
         html += `<tr>` +
             `<td><input class="rowCheck" data-idx="${i}" type="checkbox" /></td>` +
@@ -286,15 +305,18 @@ function renderResults(results) {
             `<td>${escapeHtml(r.descripcion)}</td>` +
             `</tr>`;
     });
+
     html += '</tbody></table>';
     container.innerHTML = html;
     sendBtn.disabled = false;
 
-    document.getElementById('selectAll').addEventListener('change', (e) => {
+    // selectAll handler
+    document.getElementById('selectAll').addEventListener('change', function(e) {
         const checks = container.querySelectorAll('.rowCheck');
         checks.forEach(c => c.checked = e.target.checked);
     });
 
+    // individual check change -> enable/disable send button if none selected
     container.querySelectorAll('.rowCheck').forEach(chk => {
         chk.addEventListener('change', () => {
             const any = Array.from(container.querySelectorAll('.rowCheck')).some(c => c.checked);
@@ -303,6 +325,7 @@ function renderResults(results) {
     });
 }
 
+// Escapa texto para HTML simple
 function escapeHtml(text) {
     if (text === null || text === undefined) return '';
     return String(text)
@@ -313,6 +336,7 @@ function escapeHtml(text) {
       .replace(/'/g, '&#039;');
 }
 
+// Muestra modal para pedir el nombre y devuelve una promesa con el valor (o null si se cancela)
 function promptForInvoiceName(defaultValue = '') {
     return new Promise((resolve) => {
         const backdrop = document.getElementById('nameModalBackdrop');
@@ -352,6 +376,7 @@ function promptForInvoiceName(defaultValue = '') {
     });
 }
 
+// Envia las filas seleccionadas a SheetDB
 async function sendToSheetDB() {
     const container = document.getElementById('results');
     const status = document.getElementById('status');
@@ -361,11 +386,13 @@ async function sendToSheetDB() {
         return;
     }
 
+    // Pedir el nombre que se usará en la columna "Nombre"
     let nombre = await promptForInvoiceName();
     if (nombre === null) {
         status.textContent = 'Envío cancelado por el usuario.';
         return;
     }
+    // Si el usuario dejó el nombre vacío, pedirlo de nuevo hasta que escriba algo o cancele
     while (nombre !== null && nombre.trim() === '') {
         nombre = await promptForInvoiceName();
         if (nombre === null) {
@@ -374,10 +401,12 @@ async function sendToSheetDB() {
         }
     }
 
+    // Reconstruir datos desde la tabla, asignando el mismo nombre a cada fila
     const rows = [];
     checks.forEach(c => {
         const tr = c.closest('tr');
         const tds = tr.querySelectorAll('td');
+        // tds[1] = cantidad, tds[2] = codigo, tds[3] = descripcion
         const cantidad = tds[1].textContent.trim();
         const codigo = tds[2].textContent.trim();
         const descripcion = tds[3].textContent.trim();
@@ -393,19 +422,29 @@ async function sendToSheetDB() {
         });
     });
 
+    // Mostrar en status y en consola el nombre que se va a usar
     status.textContent = `Enviando ${rows.length} fila(s) a la hoja con nombre: "${nombre}"...`;
+    console.log('Nombre asignado a cada fila:', nombre);
+    console.log('Rows to send:', rows);
+
     try {
         const endpoint = 'https://sheetdb.io/api/v1/c43nq1n4r4np3?sheet=traspasos';
 
+        // Intento 1: formato { data: [ ... ] }
+        console.log('SheetDB payload (attempt 1):', JSON.stringify({ data: rows }, null, 2));
         let resp = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ data: rows })
         });
 
+        // Si devuelve 400, intentamos enviar solo el array (algunas APIs aceptan este formato)
         if (!resp.ok && resp.status === 400) {
             const txt = await resp.text();
+            // mostrar respuesta del servidor para diagnóstico
             status.textContent = 'Error al enviar (formato {data:[]}): ' + resp.status + ' ' + txt + '\nIntentando formato alternativo...';
+
+            console.log('SheetDB payload (attempt 2 - raw array):', JSON.stringify(rows, null, 2));
             resp = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -413,12 +452,13 @@ async function sendToSheetDB() {
             });
         }
 
+        // Si aún falla, intentamos enviar con claves 'sanitizadas' (sin '/', sin espacios, sin tildes)
         if (!resp.ok && resp.status === 400) {
             const sanitizeKey = k => k
-                .normalize('NFD').replace(/\p{Diacritic}/gu, '')
-                .replace(/\//g, '_')
-                .replace(/\s+/g, '_')
-                .replace(/[^\w_]/g, '');
+                .normalize('NFD').replace(/\p{Diacritic}/gu, '') // quitar tildes
+                .replace(/\//g, '_') // reemplazar '/' por '_'
+                .replace(/\s+/g, '_') // espacios por '_'
+                .replace(/[^\w_]/g, ''); // quitar otros caracteres
 
             const sanitizedRows = rows.map(r => {
                 const nr = {};
@@ -426,6 +466,7 @@ async function sendToSheetDB() {
                 return nr;
             });
 
+            console.log('SheetDB payload (attempt 3 - sanitized keys):', JSON.stringify({ data: sanitizedRows }, null, 2));
             resp = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -437,23 +478,28 @@ async function sendToSheetDB() {
             const txt = await resp.text();
             status.textContent = 'Error al enviar: ' + resp.status + ' ' + txt;
             status.className = 'error';
+            console.error('SheetDB error response:', resp.status, txt);
             return;
         }
 
+        // Intento exitoso
         let json;
         try { json = await resp.json(); } catch(e) { json = null; }
         status.textContent = '✓ Envío completo. ' + (json ? JSON.stringify(json) : 'OK');
         status.className = 'success';
-
+        
+        // Limpiar completamente para siguiente pedido
         container.innerHTML = '';
         document.getElementById('sendBtn').disabled = true;
         document.getElementById('pdfFile').value = '';
+        
+        console.log('SheetDB success response:', json);
     } catch (err) {
         status.textContent = 'Excepción al enviar: ' + err.message;
         status.className = 'error';
+        console.error(err);
     }
 }
-
 </script>
 </body>
 </html>
