@@ -546,14 +546,19 @@
 
         // Sanitizar texto antes de enviarlo a la base de datos
         // Permite: letras (incluye acentos), números, espacios, paréntesis, guión, guión bajo, barra y punto
+        // Incluye regla especial: corregir HUO1 → HU01 en descripciones
         function sanitizeTextForDB(value) {
             if(value === null || value === undefined) return '';
+            let cleaned = '';
             try {
-                return String(value).replace(/[^\p{L}\p{N}\s()\-_/\.]/gu, '').trim();
+                cleaned = String(value).replace(/[^\p{L}\p{N}\s()\-_/\.]/gu, '').trim();
             } catch (e) {
                 // Si el entorno no soporta \p{L}/unicode, usar alternativa conservadora (letras latinas básicas + números)
-                return String(value).replace(/[^A-Za-z0-9\s()\-_/\.]/g, '').trim();
+                cleaned = String(value).replace(/[^A-Za-z0-9\s()\-_/\.]/g, '').trim();
             }
+            // Regla especial: corregir HUO1 → HU01 (letra + letra + letra + número → letra + letra + número + letra)
+            cleaned = cleaned.replace(/HUO(\d)/g, 'HU0$1');
+            return cleaned;
         }
 
         // Confirmar y enviar a SheetDB
