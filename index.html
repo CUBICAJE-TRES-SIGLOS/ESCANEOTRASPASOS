@@ -236,8 +236,8 @@
     <h1>Escanea tus traspasos para ser más ágil el proceso</h1>
     <div class="container">
         <div class="upload-area" onclick="document.getElementById('pdfInput').click()">
-            <p>📁 Haz clic o arrastra aquí para seleccionar tu PDF</p>
-            <input type="file" id="pdfInput" accept=".pdf" />
+            <p>📁 Haz clic o arrastra aquí para seleccionar tu(s) PDF(s)</p>
+            <input type="file" id="pdfInput" accept=".pdf" multiple />
         </div>
         <button id="btnStart" class="btn-primary btn-disabled" onclick="startScan()" disabled>🚀 INICIAR ESCANEO</button>
         <button id="btnClearCache" class="btn-secondary" onclick="confirmClearCache()" title="Limpiar caché y recargar" aria-label="Limpiar caché">🧹 LIMPIAR CACHE</button>
@@ -314,7 +314,8 @@
         const progressText = document.getElementById('progressText');
         const pageCounter = document.getElementById('pageCounter');
         let extractedData = [];
-        let currentFile = null;
+        let currentFiles = []; // Cambiar a array para múltiples archivos
+        let currentFileIndex = 0; // Índice del archivo actual siendo procesado
         // Almacenar canvases y resultados por página para re-procesos y diagnóstico
         let pagesCanvases = [];
         let pageResults = [];
@@ -339,9 +340,11 @@
 
         pdfInput.addEventListener('change', () => {
             if(pdfInput.files.length > 0) {
-                currentFile = pdfInput.files[0];
+                currentFiles = Array.from(pdfInput.files); // Convertir FileList a array
+                currentFileIndex = 0;
                 enableStart();
-                showStatus('✅ Archivo PDF cargado. Listo para escanear.', 'status-ready');
+                const filenames = currentFiles.map(f => f.name).join(', ');
+                showStatus(`✅ ${currentFiles.length} archivo(s) cargado(s): ${filenames}`, 'status-ready');
             }
         });
 
@@ -357,13 +360,39 @@
         }
 
         async function startScan() {
-            if(!currentFile) {
-                alert('⚠️ Por favor selecciona un archivo PDF primero.');
+            if(currentFiles.length === 0) {
+                alert('⚠️ Por favor selecciona uno o más archivos PDF primero.');
                 return;
             }
             btnStart.disabled = true;
             btnStart.classList.add('btn-disabled');
-            showStatus('🔄 Escaneando PDF... por favor espera.', 'status-processing');
+            extractedData = []; // Limpiar datos previos
+            currentFileIndex = 0;
+            
+            // Procesar archivos secuencialmente
+            await processNextFile();
+        }
+
+        async function processNextFile() {
+            if(currentFileIndex >= currentFiles.length) {
+                // Todos los archivos procesados
+                if(extractedData.length === 0) {
+                    showStatus('⚠️ No se encontraron productos en los PDFs. Verifica los archivos.', 'status-error');
+                } else {
+                    showStatus(`✅ Escaneo completado. ${extractedData.length} productos extraídos de ${currentFiles.length} archivo(s).`, 'status-ready');
+                    displayTable();
+                    btnClear.style.display = 'inline-block';
+                }
+                progressContainer.style.display = 'none';
+                btnStart.disabled = false;
+                btnStart.classList.remove('btn-disabled');
+                return;
+            }
+            
+            const currentFile = currentFiles[currentFileIndex];
+            const fileNumber = currentFileIndex + 1;
+            
+            showStatus(`🔄 Procesando archivo ${fileNumber}/${currentFiles.length}: ${currentFile.name}`, 'status-processing');
             progressContainer.style.display = 'block';
 
             try {
@@ -377,7 +406,7 @@
                     const content = await page.getTextContent();
                     rawText += content.items.map(item => item.str).join(' ') + '\n';
                     
-                    // Actualizar barra de progreso
+                    // Actualizar barra de progreso (mostrar progreso del archivo actual)
                     updateProgress(i, pdf.numPages);
                 }
 
@@ -385,43 +414,40 @@
                 await generateThumbnails(pdf);
 
                 // Detectar texto nativo para extraer directamente
+                let fileData = [];
                 if(!textoTieneFormato(rawText)) {
-                    showStatus('📸 PDF escaneado detectado. Iniciando OCR...', 'status-ocr');
+                    showStatus(`📸 PDF escaneado detectado (${fileNumber}/${currentFiles.length}). Iniciando OCR...`, 'status-ocr');
                     console.log('⚠️ Activando OCR porque no se detectó texto nativo');
-                    extractedData = await ocrPDF(currentFile, pdf.numPages);
+                    fileData = await ocrPDF(currentFile, pdf.numPages);
                     // Corregir confusiones comunes de OCR (B<->8, O<->0) en códigos y descripciones
-                    extractedData = applyOcrCorrectionsToProducts(extractedData);
-                    // marcar progreso completo después de OCR
-                    completeProgress();
+                    fileData = applyOcrCorrectionsToProducts(fileData);
                 } else {
                     console.log('✅ Extrayendo de texto nativo (no OCR)');
-                    extractedData = extraerProductos(rawText);
+                    fileData = extraerProductos(rawText);
                     // Corregir confusiones comunes de OCR (B<->8, O<->0)
-                    extractedData = applyOcrCorrectionsToProducts(extractedData);
-                    // marcar progreso completo después de extracción de texto
-                    completeProgress();
+                    fileData = applyOcrCorrectionsToProducts(fileData);
                 }
-
-                if(extractedData.length === 0) {
-                    showStatus('⚠️ No se encontraron productos. Verifica el PDF.', 'status-error');
-                } else {
-                    showStatus(`✅ Escaneo completado. ${extractedData.length} productos extraídos.`, 'status-ready');
-                    displayTable();
-                    btnClear.style.display = 'inline-block';
-                }
-                progressContainer.style.display = 'none';
+                
+                // Agregar datos del archivo actual al total
+                extractedData = extractedData.concat(fileData);
+                
+                console.log(`✅ Archivo ${fileNumber} completado: ${fileData.length} productos extraídos`);
+                
+                // Pasar al siguiente archivo
+                currentFileIndex++;
+                await processNextFile();
 
             } catch(e) {
                 console.error(e);
-                showStatus('❌ Error procesando el PDF. Revisa el archivo y vuelve a intentarlo.', 'status-error');
+                showStatus(`❌ Error procesando el archivo ${fileNumber}. Revisa el archivo y vuelve a intentarlo.`, 'status-error');
                 // Reset progress on error
                 progressBar.style.width = '0%';
                 progressText.textContent = '0%';
                 pageCounter.textContent = '';
                 progressContainer.style.display = 'none';
+                btnStart.disabled = false;
+                btnStart.classList.remove('btn-disabled');
             }
-            btnStart.disabled = false;
-            btnStart.classList.remove('btn-disabled');
         }
 
         function updateProgress(current, total) {
