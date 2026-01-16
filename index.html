@@ -316,6 +316,7 @@
         let extractedData = [];
         let currentFiles = []; // Cambiar a array para múltiples archivos
         let currentFileIndex = 0; // Índice del archivo actual siendo procesado
+        let currentFile = null; // Variable global para acceso desde openNameModal()
         // Almacenar canvases y resultados por página para re-procesos y diagnóstico
         let pagesCanvases = [];
         let pageResults = [];
@@ -389,7 +390,7 @@
                 return;
             }
             
-            const currentFile = currentFiles[currentFileIndex];
+            currentFile = currentFiles[currentFileIndex];
             const fileNumber = currentFileIndex + 1;
             
             showStatus(`🔄 Procesando archivo ${fileNumber}/${currentFiles.length}: ${currentFile.name}`, 'status-processing');
