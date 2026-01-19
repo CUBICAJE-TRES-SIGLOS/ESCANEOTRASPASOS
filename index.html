@@ -471,22 +471,47 @@
             // Detecta si el PDF tiene texto extraíble de alta calidad
             if(!texto || texto.length < 50) return false;
             
+            // Calcular densidad de caracteres extraños (indicador de texto mal extraído)
+            const caracteresRaros = (texto.match(/[\u0000-\u001F\u007F-\u009F]/g) || []).length;
+            const ratioRaros = caracteresRaros / texto.length;
+            if(ratioRaros > 0.05) return false; // Más del 5% de caracteres raros = necesita OCR
+            
             // Buscar patrones de producto/artículo
-            const tieneEncabezados = /producto|artículo|descripción|cantidad|código/i.test(texto);
+            const tieneEncabezados = /producto|artículo|descripción|cantidad|código|artículo/i.test(texto);
             
-            // Buscar al menos una línea con formato de producto (número + texto)
-            const lineas = texto.split('\n');
-            const tieneProductos = lineas.some(linea => {
-                // Buscar líneas que empiezan con número seguido de más datos
-                return /^\d+\s+\S+\s+.+/i.test(linea.trim());
-            });
+            // Buscar líneas con formato de producto (número + texto)
+            const lineas = texto.split('\n').map(l => l.trim()).filter(l => l.length > 0);
             
-            // Considerar que tiene buen formato si:
-            // - Tiene encabezados Y al menos 1 producto, O
-            // - Tiene muchas líneas con formato de producto
-            const conteoProductos = lineas.filter(l => /^\d+\s+\S+/.test(l.trim())).length;
+            // Contar líneas que parecen productos válidos
+            let productosValidos = 0;
+            let lineasConNumeros = 0;
             
-            return (tieneEncabezados && tieneProductos) || conteoProductos >= 3;
+            for(const linea of lineas) {
+                // Línea empieza con número seguido de más datos
+                if(/^\d+\s+\S+\s+.+/i.test(linea)) {
+                    productosValidos++;
+                }
+                // Línea contiene números (general)
+                if(/\d/.test(linea)) {
+                    lineasConNumeros++;
+                }
+            }
+            
+            // Calcular ratio de líneas estructuradas
+            const ratioProductos = lineas.length > 0 ? productosValidos / lineas.length : 0;
+            const ratioNumeros = lineas.length > 0 ? lineasConNumeros / lineas.length : 0;
+            
+            // Criterios más estrictos:
+            // 1. Tiene encabezados Y al menos 3 productos válidos
+            // 2. Al menos 20% de líneas tienen formato de producto
+            // 3. Al menos 30% de líneas contienen números
+            const criterio1 = tieneEncabezados && productosValidos >= 3;
+            const criterio2 = ratioProductos >= 0.2;
+            const criterio3 = ratioNumeros >= 0.3 && productosValidos >= 2;
+            
+            console.log(`📊 Análisis de texto: ${productosValidos} productos válidos, ratio: ${(ratioProductos*100).toFixed(1)}%, números: ${(ratioNumeros*100).toFixed(1)}%`);
+            
+            return criterio1 || criterio2 || criterio3;
         }
 
         function extraerProductos(texto) {
@@ -615,8 +640,8 @@
             for(let i=1; i<=numPages; i++) {
                 const page = await pdf.getPage(i);
 
-                // Escalar para mejor OCR
-                const viewport = page.getViewport({scale: 3.0});
+                // Escalar para mejor OCR (aumentado a 4.0 para mayor calidad)
+                const viewport = page.getViewport({scale: 4.0});
                 const canvas = document.createElement('canvas');
                 const ctx = canvas.getContext('2d');
                 canvas.height = viewport.height;
@@ -653,7 +678,7 @@
             return datos;
         }
 
-        // Preprocesado simple en canvas para mejorar OCR (si OpenCV no está disponible)
+        // Preprocesado mejorado en canvas para optimizar OCR
         function preprocessCanvas(canvas) {
             try {
                 const enable = document.getElementById('enableAdvancedPreproc');
@@ -662,20 +687,75 @@
                     preprocessCanvasWithOpenCV(canvas);
                     return;
                 }
-                // Fallback: preprocesado ligero en el canvas
+                // Fallback mejorado: preprocesado avanzado en el canvas
                 const ctx = canvas.getContext('2d');
                 const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                 const data = imageData.data;
 
-                // Convertir a escala de grises y aumentar contraste
-                const contrastFactor = 1.6; // 1.0=original
+                // Paso 1: Convertir a escala de grises con ponderación mejorada
+                const grayData = new Uint8Array(data.length / 4);
                 for (let i = 0; i < data.length; i += 4) {
                     const r = data[i], g = data[i+1], b = data[i+2];
-                    const gray = Math.round(0.299*r + 0.587*g + 0.114*b);
+                    grayData[i/4] = Math.round(0.299*r + 0.587*g + 0.114*b);
+                }
+
+                // Paso 2: Reducir ruido con filtro de mediana simple (3x3)
+                const width = canvas.width;
+                const height = canvas.height;
+                const denoised = new Uint8Array(grayData.length);
+                for (let y = 1; y < height - 1; y++) {
+                    for (let x = 1; x < width - 1; x++) {
+                        const idx = y * width + x;
+                        const neighbors = [
+                            grayData[idx - width - 1], grayData[idx - width], grayData[idx - width + 1],
+                            grayData[idx - 1], grayData[idx], grayData[idx + 1],
+                            grayData[idx + width - 1], grayData[idx + width], grayData[idx + width + 1]
+                        ];
+                        neighbors.sort((a, b) => a - b);
+                        denoised[idx] = neighbors[4]; // mediana
+                    }
+                }
+
+                // Paso 3: Umbral adaptativo mejorado (Otsu simplificado)
+                let histogram = new Array(256).fill(0);
+                for (let i = 0; i < denoised.length; i++) {
+                    histogram[denoised[i] || grayData[i]]++;
+                }
+                
+                // Calcular umbral óptimo (método simplificado de Otsu)
+                let total = denoised.length;
+                let sum = 0;
+                for (let i = 0; i < 256; i++) sum += i * histogram[i];
+                
+                let sumB = 0, wB = 0, wF = 0, maxVar = 0, threshold = 128;
+                for (let t = 0; t < 256; t++) {
+                    wB += histogram[t];
+                    if (wB === 0) continue;
+                    wF = total - wB;
+                    if (wF === 0) break;
+                    
+                    sumB += t * histogram[t];
+                    let mB = sumB / wB;
+                    let mF = (sum - sumB) / wF;
+                    let varBetween = wB * wF * (mB - mF) * (mB - mF);
+                    
+                    if (varBetween > maxVar) {
+                        maxVar = varBetween;
+                        threshold = t;
+                    }
+                }
+
+                // Ajustar umbral para favorecer texto oscuro
+                threshold = Math.max(100, Math.min(160, threshold));
+
+                // Paso 4: Aumentar contraste y aplicar umbral
+                const contrastFactor = 1.8;
+                for (let i = 0; i < data.length; i += 4) {
+                    const gray = denoised[i/4] || grayData[i/4];
                     let v = Math.round((gray - 128) * contrastFactor + 128);
                     v = Math.max(0, Math.min(255, v));
-                    // Umbral simple para resaltar texto
-                    const out = v < 130 ? 0 : 255;
+                    // Aplicar umbral calculado
+                    const out = v < threshold ? 0 : 255;
                     data[i] = data[i+1] = data[i+2] = out;
                 }
                 ctx.putImageData(imageData, 0, 0);
@@ -684,7 +764,7 @@
             }
         }
 
-        // Preprocesado avanzado usando OpenCV.js: deskew, CLAHE, adaptive threshold
+        // Preprocesado avanzado usando OpenCV.js: deskew, CLAHE, morfología, adaptive threshold
         function preprocessCanvasWithOpenCV(canvas) {
             try {
                 if(typeof cv === 'undefined') return;
@@ -693,23 +773,56 @@
                 let gray = new cv.Mat();
                 cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
 
-                // Aplicar CLAHE (mejora local de contraste)
+                // Paso 1: Aplicar CLAHE (mejora local de contraste) con parámetros optimizados
                 try {
-                    let clahe = new cv.CLAHE(2.0, new cv.Size(8,8));
+                    let clahe = new cv.CLAHE(3.0, new cv.Size(8,8));
                     clahe.apply(gray, gray);
                     clahe.delete();
                 } catch(e) {
                     console.warn('⚠️ CLAHE no disponible o falló:', e);
                 }
 
-                // Suavizado para reducir ruido
-                cv.GaussianBlur(gray, gray, new cv.Size(3,3), 0, 0, cv.BORDER_DEFAULT);
+                // Paso 2: Reducir ruido con filtro bilateral (preserva bordes)
+                try {
+                    let denoised = new cv.Mat();
+                    cv.bilateralFilter(gray, denoised, 9, 75, 75);
+                    gray.delete();
+                    gray = denoised;
+                } catch(e) {
+                    // Fallback a Gaussian si bilateral no está disponible
+                    cv.GaussianBlur(gray, gray, new cv.Size(3,3), 0, 0, cv.BORDER_DEFAULT);
+                }
 
-                // Umbral adaptativo para binarizar
+                // Paso 3: Aumentar nitidez para mejorar bordes de texto
+                try {
+                    let blurred = new cv.Mat();
+                    cv.GaussianBlur(gray, blurred, new cv.Size(0,0), 3);
+                    let sharpened = new cv.Mat();
+                    cv.addWeighted(gray, 1.5, blurred, -0.5, 0, sharpened);
+                    gray.delete();
+                    gray = sharpened;
+                    blurred.delete();
+                } catch(e) {
+                    console.warn('⚠️ Sharpening falló:', e);
+                }
+
+                // Paso 4: Umbral adaptativo para binarizar (parámetros optimizados)
                 let bin = new cv.Mat();
-                cv.adaptiveThreshold(gray, bin, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 15, 4);
+                cv.adaptiveThreshold(gray, bin, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 21, 8);
 
-                // Intentar deskew (rotación) usando contornos grandes
+                // Paso 5: Operaciones morfológicas para limpiar ruido y conectar componentes de texto
+                try {
+                    let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2, 2));
+                    // Cerrar pequeños agujeros en caracteres
+                    cv.morphologyEx(bin, bin, cv.MORPH_CLOSE, kernel);
+                    // Eliminar ruido pequeño
+                    cv.morphologyEx(bin, bin, cv.MORPH_OPEN, kernel);
+                    kernel.delete();
+                } catch(e) {
+                    console.warn('⚠️ Operaciones morfológicas fallaron:', e);
+                }
+
+                // Paso 6: Intentar deskew (rotación) usando contornos grandes
                 try {
                     let contours = new cv.MatVector();
                     let hierarchy = new cv.Mat();
@@ -797,7 +910,7 @@
 
             showStatus(`🔎 OCR página ${pageNum}...`, 'status-ocr');
 
-            // Ejecutar Tesseract (con logger para progreso)
+            // Ejecutar Tesseract con parámetros optimizados para documentos
             const result = await Tesseract.recognize(temp, 'spa', {
                 logger: m => {
                     if (m.status === 'recognizing text' && m.progress) {
@@ -805,7 +918,10 @@
                         const pct = Math.round(m.progress * 100);
                         progressText.textContent = `OCR p${pageNum}: ${pct}%`;
                     }
-                }
+                },
+                tessedit_pageseg_mode: Tesseract.PSM.AUTO,
+                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789áéíóúñÁÉÍÓÚÑ .-/()°',
+                preserve_interword_spaces: '1'
             });
 
             const rawWords = (result && result.data && result.data.words) ? result.data.words : [];
@@ -1221,12 +1337,24 @@
             return cleaned;
         }
 
-        // --- Correcciones post-OCR para reducir confusiones comunes (B<->8, O<->0) ---
+        // --- Correcciones post-OCR expandidas para reducir confusiones comunes ---
         function fixOcrConfusionsInToken(token) {
             if(!token) return token;
             let t = String(token).trim();
             if(!t) return t;
             const orig = t;
+            
+            // Correcciones específicas primero (antes de contextuales)
+            // Patrones comunes en códigos de productos
+            t = t.replace(/\bI([0-9])/g, '1$1'); // I seguida de número -> 1
+            t = t.replace(/([0-9])I\b/g, '$11'); // Número seguido de I al final -> 1
+            t = t.replace(/\bl([0-9])/gi, '1$1'); // l minúscula seguida de número -> 1
+            t = t.replace(/([0-9])l\b/g, '$11'); // Número seguido de l al final -> 1
+            t = t.replace(/\bS([0-9])/g, '5$1'); // S seguida de número -> 5
+            t = t.replace(/([0-9])S\b/g, '$15'); // Número seguido de S al final -> 5
+            t = t.replace(/\bZ([0-9])/g, '2$1'); // Z seguida de número -> 2
+            t = t.replace(/\bG([0-9])/g, '6$1'); // G seguida de número -> 6
+            
             // contar letras y dígitos
             const letters = (t.match(/[A-Za-zÁÉÍÓÚÑáéíóúñ]/g) || []).length;
             const digits = (t.match(/[0-9]/g) || []).length;
@@ -1235,25 +1363,40 @@
             // Si hay más dígitos que letras: preferir números (O->0, B->8)
             if(digits > letters) {
                 // O junto a dígitos -> 0
-                t = t.replace(/([0-9])O/g, '$10').replace(/O([0-9])/g, '0$1');
+                t = t.replace(/([0-9])O/gi, '$10').replace(/O([0-9])/gi, '0$1');
                 t = t.replace(/O/g, '0');
                 // B junto a dígitos -> 8
-                t = t.replace(/([0-9])B/g, '$18').replace(/B([0-9])/g, '8$1');
-                t = t.replace(/B/g, '8');
+                t = t.replace(/([0-9])B/gi, '$18').replace(/B([0-9])/gi, '8$1');
+                t = t.replace(/B/gi, '8');
+                // I -> 1
+                t = t.replace(/I/g, '1');
+                // S -> 5
+                t = t.replace(/S/g, '5');
+                // Z -> 2
+                t = t.replace(/Z/gi, '2');
+                // G -> 6 (en contextos numéricos)
+                t = t.replace(/G/gi, '6');
             } else if(letters > digits) {
                 // 0 junto a letras -> O
                 t = t.replace(/([A-Za-z])0/g, '$1O').replace(/0([A-Za-z])/g, 'O$1');
-                t = t.replace(/0/g, 'O');
                 // 8 junto a letras -> B
                 t = t.replace(/([A-Za-z])8/g, '$1B').replace(/8([A-Za-z])/g, 'B$1');
-                t = t.replace(/8/g, 'B');
+                // 1 -> I o l (mantener como está en contexto de letras)
+                // 5 -> S (solo si está entre letras)
+                t = t.replace(/([A-Za-z])5([A-Za-z])/g, '$1S$2');
             } else {
                 // Mixto o igual: usar contexto (adyacencia)
-                t = t.replace(/([0-9])O/g, '$10').replace(/O([0-9])/g, '0$1');
+                t = t.replace(/([0-9])O/gi, '$10').replace(/O([0-9])/gi, '0$1');
                 t = t.replace(/([A-Za-z])0/g, '$1O').replace(/0([A-Za-z])/g, 'O$1');
-                t = t.replace(/([0-9])B/g, '$18').replace(/B([0-9])/g, '8$1');
+                t = t.replace(/([0-9])B/gi, '$18').replace(/B([0-9])/gi, '8$1');
                 t = t.replace(/([A-Za-z])8/g, '$1B').replace(/8([A-Za-z])/g, 'B$1');
+                t = t.replace(/([0-9])I/g, '$11').replace(/I([0-9])/g, '1$1');
+                t = t.replace(/([0-9])S/g, '$15').replace(/S([0-9])/g, '5$1');
             }
+
+            // Correcciones adicionales comunes
+            t = t.replace(/([0-9])\s+([0-9])/g, '$1$2'); // Eliminar espacios dentro de números
+            t = t.replace(/([A-Z])\s+([A-Z])(?=[0-9])/g, '$1$2'); // Unir letras mayúsculas antes de números
 
             // Último paso: normalizar a mayúsculas para códigos cortos
             if(t.length <= 20) t = t.toUpperCase();
