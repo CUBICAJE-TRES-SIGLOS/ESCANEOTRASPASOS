@@ -525,7 +525,29 @@
             // Palabras clave para filtrar líneas innecesarias
             const palabrasExcluidas = ['producto', 'cantidad', 'código', 'descripción', 'código', 'total', 'subtotal', 
                                       'iva', 'neto', 'página', 'factura', 'invoice', 'referencia', 'unitario', 'precio',
-                                      'articulo', 'item', 'importe', 'unit', 'fecha', 'empresa', 'nombre', 'encabezado'];
+                                      'articulo', 'item', 'importe', 'unit', 'fecha', 'empresa', 'nombre', 'encabezado',
+                                      'almacen', 'emisor', 'receptor', 'folio', 'usuario', 'traspaso'];
+            
+            // Patrones comunes en descripciones de llantas para validación
+            const patronesLlanta = [
+                /\bR\d{2}\b/i,              // R13, R14, R15, etc.
+                /\b\d{3}\/\d{2}\b/,        // 235/45, 225/60, etc.
+                /\b\d{2,3}X\d{2}\b/i,      // 31X10, 265X70, etc.
+                /\b[A-Z]{2,3}\s*\d+\b/i,   // VT 109SJ, HT 94W, AT, etc.
+                /\b(HU|VT|AT|HT|MT)\d*\b/i, // HU01, VT, AT, HT, MT
+                /\b\d+\/\d+R\d+\b/,        // 235/45R18, etc.
+                /\bBLACKHAWK\b/i,          // Marca común
+                /\bRIDGE\b/i,              // Ridge
+                /\bBROADPEAK\b/i,          // Broadpeak
+                /\bMIRAGE\b/i,             // Mirage
+                /\bAGILITY\b/i,            // Agility
+                /\bELANZO\b/i,             // Elanzo
+                /\bGUTEPO\b/i,             // Gutepo
+                /\b\d+W\b/i,               // 90W, 94W (índice de velocidad)
+                /\b\d+V\b/i,               // 91V, 99V
+                /\b\d+H\b/i,               // 94H, 100H
+                /\b\d{3,4}LT\b/i           // 265LT, 1090LT
+            ];
             
             for(let i = 0; i < lineas.length; i++) {
                 let linea = lineas[i].trim();
@@ -547,16 +569,16 @@
                 let descripcion = null;
                 
                 // Patrón 1: "número  código  descripción" (espacios múltiples)
-                match = linea.match(/^(\d+)\s{2,}([A-Z0-9\-]{2,})\s{2,}(.{2,})$/i);
+                match = linea.match(/^(\d+)\s{2,}([A-Z0-9\-\/]{2,})\s{2,}(.{2,})$/i);
                 if(match) {
                     cantidad = parseInt(match[1], 10);
                     codigo = match[2].trim();
                     descripcion = match[3].trim();
                 }
                 
-                // Patrón 2: "número código descripción" (espacios normales, código alfanumérico)
+                // Patrón 2: "número código descripción" (espacios normales, código alfanumérico con /)
                 if(!match) {
-                    match = linea.match(/^(\d+)\s+([A-Z0-9\-\.]+)\s+(.{2,})$/i);
+                    match = linea.match(/^(\d+)\s+([A-Z0-9\-\.\/]+)\s+(.{2,})$/i);
                     if(match) {
                         cantidad = parseInt(match[1], 10);
                         codigo = match[2].trim();
@@ -564,9 +586,9 @@
                     }
                 }
                 
-                // Patrón 3: "número  palabra  palabra  palabra" (muy flexible, código = primera palabra)
+                // Patrón 3: Específico para llantas con medidas (ej: "30 235/45R18 descripción")
                 if(!match) {
-                    match = linea.match(/^(\d+)\s+(\S+)\s+(.{2,})$/i);
+                    match = linea.match(/^(\d+)\s+(\d{2,3}\/\d{2}[A-Z]*\d{2})\s+(.+)$/i);
                     if(match) {
                         cantidad = parseInt(match[1], 10);
                         codigo = match[2].trim();
@@ -574,10 +596,30 @@
                     }
                 }
                 
-                // Patrón 4: Línea con número inicial (al menos 3 caracteres más)
-                if(!match && /^\d+\s/.test(linea) && linea.length > 5) {
+                // Patrón 4: Códigos tipo "2354518BRHH011VT"
+                if(!match) {
+                    match = linea.match(/^(\d+)\s+([A-Z0-9]{8,})\s+(.{3,})$/i);
+                    if(match) {
+                        cantidad = parseInt(match[1], 10);
+                        codigo = match[2].trim();
+                        descripcion = match[3].trim();
+                    }
+                }
+                
+                // Patrón 5: "número  palabra  descripción larga" (muy flexible)
+                if(!match) {
+                    match = linea.match(/^(\d+)\s+(\S+)\s+(.{3,})$/i);
+                    if(match && match[3].length >= 3) {
+                        cantidad = parseInt(match[1], 10);
+                        codigo = match[2].trim();
+                        descripcion = match[3].trim();
+                    }
+                }
+                
+                // Patrón 6: Línea con número inicial (al menos 3 caracteres más) - muy permisivo
+                if(!match && /^\d+\s/.test(linea) && linea.length > 8) {
                     match = linea.match(/^(\d+)\s+(.+)$/);
-                    if(match && match[2].length >= 3) {
+                    if(match && match[2].length >= 5) {
                         cantidad = parseInt(match[1], 10);
                         const resto = match[2].trim();
                         const palabras = resto.split(/\s+/);
@@ -585,27 +627,40 @@
                         if(palabras.length >= 2) {
                             codigo = palabras[0];
                             descripcion = palabras.slice(1).join(' ');
-                        } else if(palabras.length === 1 && resto.length > 3) {
-                            codigo = resto.substring(0, Math.min(10, resto.length));
+                        } else if(palabras.length === 1 && resto.length > 5) {
+                            // Si es una sola palabra muy larga, dividir
+                            codigo = resto.substring(0, Math.min(15, resto.length));
                             descripcion = resto;
                         }
                     }
                 }
                 
-                // Validaciones MENOS estrictas
+                // Validaciones optimizadas para llantas
                 if(cantidad !== null && codigo && descripcion) {
                     // Validar cantidad
                     if(isNaN(cantidad) || cantidad < 1 || cantidad > 999999) continue;
                     
-                    // Validar código (muy flexible ahora)
+                    // Validar código (muy flexible)
                     codigo = codigo.trim();
                     if(codigo.length < 1) continue;
-                    if(/^[\d\s\-\.]+$/.test(codigo) && codigo.length < 3) continue; // Solo números y separadores
+                    // Permitir códigos cortos si la descripción es válida
+                    if(/^[\d\s\-\.]+$/.test(codigo) && codigo.length < 2) continue;
                     
                     // Validar descripción
                     descripcion = descripcion.trim();
-                    if(descripcion.length < 2) continue;
+                    if(descripcion.length < 3) continue;
                     if(/^[\d\-\._\s]+$/.test(descripcion)) continue; // Solo números y símbolos
+                    
+                    // Bonus: Si la descripción contiene patrones de llanta, es más probable que sea válido
+                    const esLlanta = patronesLlanta.some(patron => patron.test(descripcion));
+                    
+                    // Si parece una llanta, ser más permisivo con el código
+                    if(esLlanta && codigo.length >= 1) {
+                        console.log(`🔍 Llanta detectada: ${cantidad} | ${codigo} | ${descripcion}`);
+                    } else if(codigo.length < 2 || descripcion.length < 5) {
+                        // Si no parece llanta, validar más estrictamente
+                        continue;
+                    }
                     
                     // Crear clave única para evitar duplicados exactos
                     const clave = `${cantidad}|${codigo}|${descripcion}`.toLowerCase();
@@ -627,6 +682,50 @@
             return productos;
         }
 
+        // Función para corregir confusiones comunes del OCR en descripciones de llantas
+        function applyOcrCorrectionsToProducts(productos) {
+            return productos.map(p => {
+                let desc = p.descripcion;
+                let cod = p.codigo;
+                
+                // Correcciones comunes en códigos de llantas:
+                // B puede confundirse con 8
+                cod = cod.replace(/8LACKHAWK/gi, 'BLACKHAWK');
+                cod = cod.replace(/8ROADPEAK/gi, 'BROADPEAK');
+                cod = cod.replace(/8R/g, 'BR'); // 8R -> BR
+                
+                // O/0 confusiones
+                cod = cod.replace(/O(\d)/g, '0$1'); // O seguido de número -> 0
+                cod = cod.replace(/(\d)O/g, '$10'); // Número seguido de O -> 0
+                
+                // I/1 confusiones (menos común en códigos)
+                // l (ele minúscula) puede confundirse con 1
+                
+                // Correcciones en descripciones:
+                desc = desc.replace(/8LACKHAWK/gi, 'BLACKHAWK');
+                desc = desc.replace(/8ROADPEAK/gi, 'BROADPEAK');
+                desc = desc.replace(/0LACKHAWK/gi, 'BLACKHAWK'); // O->0 mal
+                desc = desc.replace(/BLACI<HAWK/gi, 'BLACKHAWK'); // I->K confusión
+                desc = desc.replace(/HUO1/gi, 'HU01'); // O->0
+                desc = desc.replace(/HUOl/gi, 'HU01'); // O->0, l->1
+                desc = desc.replace(/VT.*?l([0O])9/gi, 'VT 109'); // VT l09 o VT 1O9 -> VT 109
+                desc = desc.replace(/([A-Z]{2})\s*l(\d)/gi, '$1 1$2'); // VT l09 -> VT 109
+                
+                // Corregir espacios en medidas de llantas
+                desc = desc.replace(/(\d{3})\s*\/\s*(\d{2})/g, '$1/$2'); // 235 / 45 -> 235/45
+                desc = desc.replace(/(\d{2,3})\s*X\s*(\d{2})/gi, '$1X$2'); // 31 X 10 -> 31X10
+                desc = desc.replace(/R\s+(\d{2})/g, 'R$1'); // R 18 -> R18
+                
+                // Corregir confusión común: CB -> C8
+                desc = desc.replace(/C8\s*(\d{3,4})/gi, 'CB $1'); // CB1190 escrito como C81190
+                
+                // Corregir RIDGE escrito como RlDGE o R1DGE
+                desc = desc.replace(/R[Il1]DGE/gi, 'RIDGE');
+                
+                return { ...p, codigo: cod, descripcion: desc };
+            });
+        }
+        
         async function ocrPDF(file, numPages) {
             // Cargar PDF
             const arrayBuffer = await file.arrayBuffer();
@@ -640,8 +739,8 @@
             for(let i=1; i<=numPages; i++) {
                 const page = await pdf.getPage(i);
 
-                // Escalar para mejor OCR (aumentado a 4.0 para mayor calidad)
-                const viewport = page.getViewport({scale: 4.0});
+                // Escalar para mejor OCR (aumentado a 5.0 para máxima calidad en llantas)
+                const viewport = page.getViewport({scale: 5.0});
                 const canvas = document.createElement('canvas');
                 const ctx = canvas.getContext('2d');
                 canvas.height = viewport.height;
@@ -667,7 +766,10 @@
             console.log('🔍 Texto OCR reconstruido (primeros 1000 caracteres):', allText.substring(0, 1000));
 
             // Extraer productos a partir del texto reconstruido
-            const datos = extraerProductos(allText);
+            let datos = extraerProductos(allText);
+            
+            // Aplicar correcciones de OCR específicas para llantas
+            datos = applyOcrCorrectionsToProducts(datos);
 
             // Adjuntar info de página a cada producto (opcional: podría mapearse mejor)
             console.log('📦 Productos extraídos tras OCR por página:', datos.length);
@@ -910,7 +1012,7 @@
 
             showStatus(`🔎 OCR página ${pageNum}...`, 'status-ocr');
 
-            // Ejecutar Tesseract con parámetros optimizados para documentos
+            // Ejecutar Tesseract con parámetros optimizados para documentos de llantas
             const result = await Tesseract.recognize(temp, 'spa', {
                 logger: m => {
                     if (m.status === 'recognizing text' && m.progress) {
@@ -920,8 +1022,11 @@
                     }
                 },
                 tessedit_pageseg_mode: Tesseract.PSM.AUTO,
-                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789áéíóúñÁÉÍÓÚÑ .-/()°',
-                preserve_interword_spaces: '1'
+                // Caracteres ampliados para detectar mejor códigos de llantas
+                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789áéíóúñÁÉÍÓÚÑ .-/()°×XxRrVvTtHhMmAa',
+                preserve_interword_spaces: '1',
+                // Parámetros adicionales para mejorar precisión
+                tessedit_do_invert: '0'
             });
 
             const rawWords = (result && result.data && result.data.words) ? result.data.words : [];
