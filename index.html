@@ -315,6 +315,58 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
     <script>
+        const TESSERACT_CDN = 'https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js';
+        let tesseractLoadPromise = null;
+        let ocrWorkerPromise = null;
+        let currentOcrPage = 0;
+        function ensureTesseractLoaded() {
+            if (window.Tesseract) return Promise.resolve();
+            if (tesseractLoadPromise) return tesseractLoadPromise;
+            tesseractLoadPromise = new Promise((resolve, reject) => {
+                const existing = document.querySelector(`script[src="${TESSERACT_CDN}"]`);
+                if (existing && (window.Tesseract)) { resolve(); return; }
+                const s = document.createElement('script');
+                s.src = TESSERACT_CDN;
+                s.async = true;
+                s.onload = () => resolve();
+                s.onerror = () => reject(new Error('No se pudo cargar Tesseract.js'));
+                document.head.appendChild(s);
+            }).then(() => {
+                if (!window.Tesseract) {
+                    throw new Error('Tesseract no está disponible después de cargar el script');
+                }
+            });
+            return tesseractLoadPromise;
+        }
+
+        async function getOcrWorker() {
+            await ensureTesseractLoaded();
+            if (ocrWorkerPromise) return ocrWorkerPromise;
+            ocrWorkerPromise = (async () => {
+                const worker = await Tesseract.createWorker({
+                    logger: m => {
+                        if (m.status === 'recognizing text' && m.progress) {
+                            const pct = Math.round(m.progress * 100);
+                            if (currentOcrPage > 0) {
+                                progressText.textContent = `OCR p${currentOcrPage}: ${pct}%`;
+                            }
+                        }
+                    }
+                });
+                await worker.loadLanguage('spa');
+                await worker.initialize('spa');
+                await worker.setParameters({
+                    tessedit_ocr_engine_mode: Tesseract.OEM.LSTM_ONLY,
+                    tessedit_pageseg_mode: Tesseract.PSM.AUTO,
+                    preserve_interword_spaces: '1',
+                    tessedit_do_invert: '0',
+                    user_defined_dpi: '300',
+                    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789áéíóúñÁÉÍÓÚÑ .-/()°×XxRrVvTtHhMmAa'
+                });
+                return worker;
+            })();
+            return ocrWorkerPromise;
+        }
         const pdfInput = document.getElementById('pdfInput');
         const btnStart = document.getElementById('btnStart');
         const btnClear = document.getElementById('btnClear');
@@ -413,11 +465,14 @@
                 const uint8Array = new Uint8Array(arrayBuffer);
                 const pdf = await pdfjsLib.getDocument({data: uint8Array.slice()}).promise;
                 let rawText = '';
+                const pageTexts = [];
 
                 for(let i=1; i<=pdf.numPages; i++) {
                     const page = await pdf.getPage(i);
                     const content = await page.getTextContent();
-                    rawText += content.items.map(item => item.str).join(' ') + '\n';
+                    const pageText = content.items.map(item => item.str).join(' ');
+                    rawText += pageText + '\n';
+                    pageTexts[i-1] = pageText;
                     
                     // Actualizar barra de progreso (mostrar progreso del archivo actual)
                     updateProgress(i, pdf.numPages);
@@ -436,13 +491,20 @@
                     fileData = applyOcrCorrectionsToProducts(fileData);
                 } else {
                     console.log('✅ Extrayendo de texto nativo (no OCR)');
-                    fileData = extraerProductos(rawText);
+                    fileData = [];
+                    for (let p = 0; p < pageTexts.length; p++) {
+                        const perPage = extraerProductos(pageTexts[p] || '');
+                        const withPage = perPage.map(item => ({ ...item, pageNum: p + 1 }));
+                        fileData = fileData.concat(withPage);
+                    }
                     // Corregir confusiones comunes de OCR (B<->8, O<->0)
                     fileData = applyOcrCorrectionsToProducts(fileData);
                 }
                 
-                // Agregar datos del archivo actual al total
-                extractedData = extractedData.concat(fileData);
+                // Agregar datos del archivo actual al total, con nombre de hoja/origen
+                const defaultName = getDefaultSheetName(currentFile) || 'Traspasos';
+                const enriched = fileData.map(item => ({ ...item, sourceName: item.sourceName || defaultName }));
+                extractedData = extractedData.concat(enriched);
                 
                 console.log(`✅ Archivo ${fileNumber} completado: ${fileData.length} productos extraídos`);
                 
@@ -694,24 +756,60 @@
             return productos;
         }
 
+        // Normaliza confusiones comunes OCR (0/O, 5/S, 6/G) de forma contextual
+        function normalizeOcrAmbiguities(text, mode) {
+            if (!text) return text;
+            let out = text;
+
+            if (mode === 'code') {
+                // En códigos: priorizar números cuando hay dígitos vecinos
+                out = out.replace(/(?<=\d)[OOSG](?=\d)/g, m => {
+                    if (m === 'O') return '0';
+                    if (m === 'S') return '5';
+                    if (m === 'G') return '6';
+                    return m;
+                });
+                out = out.replace(/O(\d)/g, '0$1');
+                out = out.replace(/(\d)O/g, '$10');
+                out = out.replace(/S(\d)/g, '5$1');
+                out = out.replace(/(\d)S/g, '$15');
+                out = out.replace(/G(\d)/g, '6$1');
+                out = out.replace(/(\d)G/g, '$16');
+
+                // Correcciones de marcas frecuentes
+                out = out.replace(/8LACKHAWK/gi, 'BLACKHAWK');
+                out = out.replace(/8ROADPEAK/gi, 'BROADPEAK');
+                out = out.replace(/8R/g, 'BR');
+            } else {
+                // En descripciones: priorizar letras en palabras y números en medidas
+                // Convertir números a letras dentro de palabras (p.ej. 0->O, 5->S, 6->G)
+                out = out.replace(/(?<=[A-Za-z])[056](?=[A-Za-z])/g, m => {
+                    if (m === '0') return 'O';
+                    if (m === '5') return 'S';
+                    if (m === '6') return 'G';
+                    return m;
+                });
+
+                // Convertir letras a números en segmentos con dígitos vecinos (medidas/códigos)
+                out = out.replace(/(?<=\d)[OSG](?=\d)/g, m => {
+                    if (m === 'O') return '0';
+                    if (m === 'S') return '5';
+                    if (m === 'G') return '6';
+                    return m;
+                });
+            }
+
+            return out;
+        }
+
         // Función para corregir confusiones comunes del OCR en descripciones de llantas
         function applyOcrCorrectionsToProducts(productos) {
             return productos.map(p => {
                 let desc = p.descripcion;
                 let cod = p.codigo;
-                
-                // Correcciones comunes en códigos de llantas:
-                // B puede confundirse con 8
-                cod = cod.replace(/8LACKHAWK/gi, 'BLACKHAWK');
-                cod = cod.replace(/8ROADPEAK/gi, 'BROADPEAK');
-                cod = cod.replace(/8R/g, 'BR'); // 8R -> BR
-                
-                // O/0 confusiones
-                cod = cod.replace(/O(\d)/g, '0$1'); // O seguido de número -> 0
-                cod = cod.replace(/(\d)O/g, '$10'); // Número seguido de O -> 0
-                
-                // I/1 confusiones (menos común en códigos)
-                // l (ele minúscula) puede confundirse con 1
+
+                cod = normalizeOcrAmbiguities(cod, 'code');
+                desc = normalizeOcrAmbiguities(desc, 'desc');
                 
                 // Correcciones en descripciones:
                 desc = desc.replace(/8LACKHAWK/gi, 'BLACKHAWK');
@@ -738,7 +836,21 @@
             });
         }
         
+        function getOcrScaleForPage(page) {
+            try {
+                const base = page.getViewport({ scale: 1 });
+                const maxDim = Math.max(base.width || 0, base.height || 0);
+                const targetMax = 3200; // px aprox. para buen OCR sin ser demasiado pesado
+                let scale = maxDim > 0 ? targetMax / maxDim : 3.0;
+                scale = Math.max(2.5, Math.min(5.0, scale));
+                return scale;
+            } catch(e) {
+                return 3.5;
+            }
+        }
+
         async function ocrPDF(file, numPages) {
+            await getOcrWorker();
             // Cargar PDF
             const arrayBuffer = await file.arrayBuffer();
             const uint8Array = new Uint8Array(arrayBuffer);
@@ -751,8 +863,8 @@
             for(let i=1; i<=numPages; i++) {
                 const page = await pdf.getPage(i);
 
-                // Escalar para mejor OCR (aumentado a 5.0 para máxima calidad en llantas)
-                const viewport = page.getViewport({scale: 5.0});
+                // Escalar para mejor OCR (adaptativo para rendimiento/precisión)
+                const viewport = page.getViewport({scale: getOcrScaleForPage(page)});
                 const canvas = document.createElement('canvas');
                 const ctx = canvas.getContext('2d');
                 canvas.height = viewport.height;
@@ -772,13 +884,14 @@
                 displayPageSummaries(pageResults);
             }
 
-            // Unir texto reconstruido de palabras por página para extracción global
-            const allText = pageResults.map(pr => pr && pr.text ? pr.text : '').join('\n');
-
-            console.log('🔍 Texto OCR reconstruido (primeros 1000 caracteres):', allText.substring(0, 1000));
-
-            // Extraer productos a partir del texto reconstruido
-            let datos = extraerProductos(allText);
+            // Extraer productos por página para registrar origen
+            let datos = [];
+            for (let i = 0; i < pageResults.length; i++) {
+                const pr = pageResults[i];
+                const perPageText = pr && pr.text ? pr.text : '';
+                const perPageProducts = extraerProductos(perPageText).map(item => ({ ...item, pageNum: i + 1 }));
+                datos = datos.concat(perPageProducts);
+            }
             
             // Aplicar correcciones de OCR específicas para llantas
             datos = applyOcrCorrectionsToProducts(datos);
@@ -1024,22 +1137,10 @@
 
             showStatus(`🔎 OCR página ${pageNum}...`, 'status-ocr');
 
-            // Ejecutar Tesseract con parámetros optimizados para documentos de llantas
-            const result = await Tesseract.recognize(temp, 'spa', {
-                logger: m => {
-                    if (m.status === 'recognizing text' && m.progress) {
-                        // Mostrar avance del OCR dentro del texto de progreso
-                        const pct = Math.round(m.progress * 100);
-                        progressText.textContent = `OCR p${pageNum}: ${pct}%`;
-                    }
-                },
-                tessedit_pageseg_mode: Tesseract.PSM.AUTO,
-                // Caracteres ampliados para detectar mejor códigos de llantas
-                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789áéíóúñÁÉÍÓÚÑ .-/()°×XxRrVvTtHhMmAa',
-                preserve_interword_spaces: '1',
-                // Parámetros adicionales para mejorar precisión
-                tessedit_do_invert: '0'
-            });
+            // Ejecutar Tesseract con worker reutilizable y parámetros optimizados
+            currentOcrPage = pageNum;
+            const worker = await getOcrWorker();
+            const result = await worker.recognize(temp);
 
             const rawWords = (result && result.data && result.data.words) ? result.data.words : [];
             const words = rawWords.map(w => ({
@@ -1087,7 +1188,13 @@
 
             // Volver a extraer productos a partir del texto reconstruido
             const allText = pageResults.map(pr => pr && pr.text ? pr.text : '').join('\n');
-            extractedData = extraerProductos(allText);
+            extractedData = [];
+            for (let i = 0; i < pageResults.length; i++) {
+                const pr = pageResults[i];
+                const perPageText = pr && pr.text ? pr.text : '';
+                const perPageProducts = extraerProductos(perPageText).map(item => ({ ...item, pageNum: i + 1 }));
+                extractedData = extractedData.concat(perPageProducts);
+            }
             // Corregir confusiones comunes de OCR (B<->8, O<->0)
             extractedData = applyOcrCorrectionsToProducts(extractedData);
             if(extractedData.length > 0) {
@@ -1308,10 +1415,25 @@
                 return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
             }
 
+            const pageCounts = extractedData.reduce((acc, item) => {
+                const p = item.pageNum || 0;
+                acc[p] = (acc[p] || 0) + 1;
+                return acc;
+            }, {});
+
+            const pageSummary = Object.keys(pageCounts)
+                .filter(k => k !== '0')
+                .sort((a,b) => parseInt(a,10) - parseInt(b,10))
+                .map(k => `Página ${k}: ${pageCounts[k]} producto(s)`)
+                .join(' | ');
+
             let html = `<h3>📋 ${extractedData.length} productos encontrados | Total unidades: ${totalCantidad}</h3>
+                        <div style="margin:6px 0 12px; font-size:14px; color:#555;">
+                            ${pageSummary || 'Resumen por página no disponible.'}
+                        </div>
                         <table>
                             <thead>
-                                <tr><th>CANTIDAD</th><th>CÓDIGO</th><th>DESCRIPCIÓN</th><th>ACCIÓN</th></tr>
+                                <tr><th>CANTIDAD</th><th>CÓDIGO</th><th>DESCRIPCIÓN</th><th>PÁGINA</th><th>ACCIÓN</th></tr>
                             </thead>
                             <tbody>
                             ${extractedData.map((d, idx) => `
@@ -1319,6 +1441,7 @@
                                     <td><input type="number" min="0" class="cell-qty" value="${d.cantidad || 0}" /></td>
                                     <td><input type="text" class="cell-code" value="${escapeHtml(d.codigo || '')}" /></td>
                                     <td><input type="text" class="cell-desc" value="${escapeHtml(d.descripcion || '')}" /></td>
+                                    <td><input type="number" min="1" class="cell-page" value="${d.pageNum || ''}" /></td>
                                     <td><button class="btn-delete" onclick="deleteRow(${idx})">🗑️ Eliminar</button></td>
                                 </tr>
                             `).join('')}
@@ -1334,12 +1457,15 @@
                 const qty = tr.querySelector('.cell-qty');
                 const code = tr.querySelector('.cell-code');
                 const desc = tr.querySelector('.cell-desc');
+                const page = tr.querySelector('.cell-page');
 
                 const onInput = () => {
                     const qv = parseInt(qty.value, 10);
                     extractedData[idx].cantidad = isNaN(qv) ? 0 : qv;
                     extractedData[idx].codigo = code.value.trim();
                     extractedData[idx].descripcion = desc.value.trim();
+                    const pv = page ? parseInt(page.value, 10) : NaN;
+                    extractedData[idx].pageNum = isNaN(pv) ? '' : pv;
 
                     // mark edited visually
                     tr.classList.add('edited');
@@ -1355,6 +1481,7 @@
                 qty.addEventListener('input', onInput);
                 code.addEventListener('input', onInput);
                 desc.addEventListener('input', onInput);
+                if(page) page.addEventListener('input', onInput);
             });
 
             // Initial validation
@@ -1427,16 +1554,19 @@
         }
 
         // Modal control: abrir/cerrar
+        function getDefaultSheetName(file) {
+            let defaultName = '';
+            if (file && file.name) {
+                defaultName = file.name.replace(/\.[^/.]+$/, '');
+                defaultName = defaultName.replace(/[\/\\:\*\?"<>|]/g, '').trim();
+            }
+            return defaultName;
+        }
+
         function openNameModal() {
             const modal = document.getElementById('nameModal');
             const input = document.getElementById('sheetNameInput');
-            let defaultName = '';
-            if (currentFile && currentFile.name) {
-                // Quitar extensión del archivo
-                defaultName = currentFile.name.replace(/\.[^/.]+$/, '');
-                // Eliminar caracteres no válidos para nombres (/, \\, :, *, ?, ", <, >, |)
-                defaultName = defaultName.replace(/[\/\\:\*\?"<>|]/g, '').trim();
-            }
+            const defaultName = getDefaultSheetName(currentFile);
             input.value = defaultName || 'Traspasos';
             modal.style.display = 'flex';
             // Seleccionar todo para que el usuario pueda editar rápidamente
@@ -1570,16 +1700,20 @@
             // Construir filas: rellenar solo lo que tenemos, demás como cadena vacía
             // Añadimos tanto 'traspasos/Nombre' como 'Nombre' por compatibilidad
             const safeNombre = sanitizeTextForDB(nombre);
-            const rows = extractedData.map(item => ({
-                'traspasos/Nombre': safeNombre,
-                'Nombre': safeNombre,
+            const rows = extractedData.map(item => {
+                const rowNombre = sanitizeTextForDB(item.sourceName || safeNombre);
+                return ({
+                'traspasos/Nombre': rowNombre,
+                'Nombre': rowNombre,
                 'Folio': '',
                 'Fecha de Emisión': '',
                 'Usuario': '',
                 'Cantidad': item.cantidad != null ? String(item.cantidad) : '',
                 'Código': sanitizeTextForDB(item.codigo || ''),
-                'Descripción': sanitizeTextForDB(item.descripcion || '')
-            }));
+                'Descripción': sanitizeTextForDB(item.descripcion || ''),
+                'Página': item.pageNum != null && item.pageNum !== '' ? String(item.pageNum) : ''
+            });
+            });
 
             try {
                 showStatus('🔄 Enviando datos a la hoja...','status-processing');
